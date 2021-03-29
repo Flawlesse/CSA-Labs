@@ -28,7 +28,8 @@ public:
         _mem.Request(instr);
         _rf.Write(instr);
         _csrf.Write(instr);
-        Reset(ip);
+        _csrf.Reset();
+        _ip = instr->_nextIp;
     }
 
     void Reset(Word ip)
