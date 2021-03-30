@@ -82,12 +82,14 @@ private:
 			break;
 
 			case AluFunc::Sra:
-			if (A & (1 << 31))
+			if (A & 0x80000000)
 			{
-				aluResult = ((0xffffffff << (32 - (B % 32))) ^ (A >> (B % 32)));
+				aluResult = ((B % 32) ? ((Word(0xffffffff) << (32 - (B % 32))) ^ (A >> (B % 32))) : A);
 			}
 			else
+			{
 				aluResult = (A >> (B % 32));
+			}
 			break;
 
 			default: break;
@@ -172,7 +174,7 @@ private:
         		break;
 
         		case BrFunc::Ge:
-        		brResult = ((SignedWord)(instr->_src1Val) == (SignedWord)(instr->_src2Val));
+        		brResult = ((SignedWord)(instr->_src1Val) >= (SignedWord)(instr->_src2Val));
         		break;
 
         		case BrFunc::Geu:

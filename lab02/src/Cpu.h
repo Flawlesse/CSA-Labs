@@ -22,13 +22,17 @@ public:
         /* YOUR CODE HERE */
         Word ip = _mem.Request(_ip);
         InstructionPtr instr = _decoder.Decode(ip);
+
         _rf.Read(instr);
         _csrf.Read(instr);
-        _exe.Execute(instr, ip);
+
+        _exe.Execute(instr, _ip); 
         _mem.Request(instr);
+
         _rf.Write(instr);
         _csrf.Write(instr);
-        _csrf.Reset();
+
+        _csrf.InstructionExecuted();
         _ip = instr->_nextIp;
     }
 
