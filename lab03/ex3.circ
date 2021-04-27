@@ -248,10 +248,13 @@ This file is intended to be loaded by Logisim-evolution (https://github.com/reds
       <a name="facing" val="east"/>
       <a name="label" val="Currrent_State_0"/>
     </comp>
+<<<<<<< HEAD
     <comp lib="0" loc="(720,590)" name="Tunnel">
       <a name="facing" val="east"/>
       <a name="label" val="Current_State_1"/>
     </comp>
+=======
+>>>>>>> 998f1effa513ffb33e2025545c82640ca974cbc2
     <comp lib="0" loc="(980,510)" name="Pin">
       <a name="facing" val="west"/>
       <a name="output" val="true"/>
