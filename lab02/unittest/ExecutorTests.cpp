@@ -237,6 +237,20 @@ TEST_SUITE("Executor"){
         }
     }
     /* YOUR CODE HERE */
+    TEST_CASE("MyTest"){
+        SUBCASE("ORI"){
+            //           imm[11:0]     rs1  f3   rd    opcode
+            //   ORI = 0b000000000011 00001 110 01111 0010011;
+            Word ori = 0b00000000001100001110011110010011;
+            auto instruction = _decoder.Decode(ori);
+
+            instruction->_src1Val = SRCVAL1;
+            _exe.Execute(instruction, IP);
+
+            CHECK_EQ(instruction->_nextIp, IP + 4);
+            CHECK_EQ(instruction->_data, SRCVAL1 | IMM);
+        }
+    }
 }
 
 void testAlu(InstructionPtr &instruction, Executor &exe){

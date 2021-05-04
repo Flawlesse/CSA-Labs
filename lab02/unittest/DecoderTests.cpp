@@ -223,6 +223,20 @@ TEST_SUITE("Decoder"){
     }
 
     /* YOUR CODE HERE */
+    TEST_CASE("MyTest"){
+        SUBCASE("ORI"){
+            //           imm[11:0]     rs1  f3   rd    opcode
+            //   ORI = 0b000000000011 00001 110 01111 0010011;
+            Word ori = 0b00000000001100001110011110010011;
+            auto instruction = _decoder.Decode(ori);
+
+            CHECK(instruction->_type == IType::Alu);
+            CHECK(instruction->_aluFunc == AluFunc::Or);
+            CHECK_EQ(instruction->_src1.value(), 1);
+            CHECK_EQ(instruction->_dst.value(), 15);
+            CHECK_EQ(instruction->_imm.value(), 3);
+        }
+    }
 }
 
 void testBranch(InstructionPtr &instruction){
