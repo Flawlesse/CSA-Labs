@@ -106,17 +106,14 @@ void QueuesTests() {
 		cout << "-----------------ATOMIC QUEUE------------------" << endl;
 		for (size_t consumers : {1, 2, 4}) {
 			for (size_t producers : {1, 2, 4}) {
-				//for (size_t qsize : {1, 4, 16}) {
 					auto start = steady_clock().now();
-					runAtomicQueue(sum, consumers, producers, 1); //,qsize
+					runAtomicQueue(sum, consumers, producers); 
 					auto finish = steady_clock().now();
 					cout << "NumConsumers: " << consumers << endl;
 					cout << "NumProducers: " << producers << endl;
-					//cout << "Queue size: " << qsize << endl;
 					cout << "Resulting sum: " << sum << endl;
 					cout << "Time elapsed: " << duration_cast<milliseconds>(finish - start).count() << "ms" << endl << endl;
-				}
-			//}
+			}
 		}
 	}
 }

@@ -8,7 +8,7 @@
 #include <chrono>
 
 constexpr size_t CACHE_LINE_SIZE = 64; // typically
-extern uint64_t NumTasks2 = 1024;
+extern uint64_t NumTasks2 = 4 * 1024 * 1024;
 
 using std::atomic;
 using std::condition_variable;
@@ -129,8 +129,6 @@ public:
 		back->data = val;
 		back = back->next;
 		++size;
-		//printf("PUSH --> SIZE = %u\n", size);
-		lock.unlock();
 		cond.notify_all();
 	}
 
@@ -143,12 +141,9 @@ public:
 			val = front->data;
 			fix_q();
 			--size;
-			//printf("POP  --> SIZE = %u\n", size);
-			//printf("popping... Size = %u\n", this->size);
 		}
-		lock.unlock();
 		cond.notify_all();
-		//if (!res) printf("We did not wait long enough...\n");
+		if (!res) printf("NO MORE DATA\n");
 		return res;
 	}
 };
@@ -156,60 +151,84 @@ public:
 
 
 
-class AtomicQueue {
-	struct Container {
-		uint8_t* _inner;
-		Container(size_t max_size) {
-			_inner = (uint8_t*)calloc(max_size, 1);
-		}
-		~Container() {
-			free(_inner);
-		}
-		void inner_push(uint8_t val, size_t i) {
-			_inner[i] = val;
-		}
-		void inner_pop(uint8_t& val, const size_t &max_size) {
-			val = _inner[0];
-			memcpy(_inner, _inner + 1, max_size - 1);
-		}
-	};
-
-	const size_t max_size;
-	atomic<size_t> size;
-	atomic<Container*> container;
-
-	condition_variable cond;
-	mutex m;
-	
-	bool empty() { return size == 0; }
-	bool full() { return size == max_size; }
-public:
-	AtomicQueue(size_t qsize):
-	max_size(qsize), size(0)
+class AtomicQueue : BaseQueue
+{
+private:
+	struct Node
 	{
-		container = new Container(qsize);
+		Node(uint8_t val) : _value(val), _next(nullptr) {}
+		uint8_t _value;
+		atomic<Node*> _next; // shared between all
+		// each Node is padded to be on exactly ONE cache line
+		char pad[CACHE_LINE_SIZE - sizeof(uint8_t) - sizeof(atomic<Node*>)];
+	};
+	char pad0[CACHE_LINE_SIZE];
+
+	Node* _head; // _head is not shared
+	char pad1[CACHE_LINE_SIZE - sizeof(Node*)];
+
+	atomic<bool>  _consumerLock;
+	char pad2[CACHE_LINE_SIZE - sizeof(atomic<bool>)];
+
+	Node* _tail; // _tail is not shared
+	char pad3[CACHE_LINE_SIZE - sizeof(Node*)];
+
+	atomic<bool>  _producerLock;
+	char pad4[CACHE_LINE_SIZE - sizeof(atomic<bool>)];
+public:
+	AtomicQueue() {
+		_head = _tail = new Node(0); // head points to pseudo-element before actual head
+		// _producerLock = _consumerLock = false;
 	}
-	~AtomicQueue() {
-		delete container;
-	}
-	
-	virtual void push(uint8_t val) {
-		unique_lock<mutex> lock(m);
-		cond.wait(lock, [&] {return !full(); });
-		(*container).inner_push(val, size);
-		++size;
-		cond.notify_all();
+	~AtomicQueue()
+	{
+		//printf("Destructor called.\n");
+		while (_head != nullptr)
+		{
+			Node* tmp = _head;
+			_head = _head->_next;
+			delete tmp;
+		}
+		//printf("Destructor finished.\n");
 	}
 
-	virtual bool pop(uint8_t& val) {
-		unique_lock<mutex> lock(m);
-		bool res;
-		if (res = cond.wait_for(lock, 1ms, [&] { return !empty(); })) {
-			(*container).inner_pop(val, max_size);
-			--size;
+	// producers only use _tail pointer
+	void push(const uint8_t val)
+	{
+		Node* tmp = new Node(val);
+		while (_producerLock.exchange(true)) ; // producer mutex lock
+		//printf("PUSH L. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+		_tail->_next = tmp;
+		_tail = tmp;
+		_producerLock = false; // producer mutex unlock
+		//printf("PUSH U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+	}
+	// consumers only use _head pointer
+	bool pop(uint8_t& val)
+	{
+		while (_consumerLock.exchange(true)) ; // consumer mutex lock
+		Node* head_to_delete = _head;
+		Node* actual_head = _head->_next;
+		//printf("POP  L. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+		if (!actual_head) {
+			sleep_for(1ms);
+			head_to_delete = _head;
+			actual_head = _head->_next;
 		}
-		cond.notify_all();
-		return res;
+		if (actual_head) {
+			val = actual_head->_value;
+			actual_head->_value = 0;
+			_head = actual_head;
+			_consumerLock = false; // consumer lock unlock
+			//printf("\nBefore delete...  Thread id: %u\nAddress: %p\n", std::hash<std::thread::id>{}(std::this_thread::get_id()), head_to_delete);
+			delete head_to_delete;
+			//printf("After delete...   Thread id: %u\n\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+			//printf("POP  U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+			return true;
+		}
+		_consumerLock = false;
+		//printf("POP  U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+		return false;
 	}
 };
 
@@ -227,10 +246,11 @@ public:
 
 	void operator()()
 	{
+		int nt = numTasks;
 		while (numTasks--)
 		{
 			_queue->push(1);
-			//printf("TASKS REMAIN = %u   PRODUCER NUM TASKS = %u\n", numTasks, 16 - numTasks);
+			//printf("TASKS REMAIN = %u   PRODUCER NUM TASKS = %u\n", (int)numTasks, nt - (int)numTasks);
 		}
 	}
 };
@@ -251,7 +271,7 @@ public:
 		while (_queue->pop(val))
 		{
 			localSum = localSum + val;
-			//printf("VAL = %u    CONSUMER LOCAL SUM = %u\n", val, localSum);
+			//printf("VAL = %u CONSUMED\n", val);
 		}
 	}
 
@@ -299,150 +319,9 @@ void runStaticQueue(uint64_t& sum, size_t numConsumers, size_t numProducers, siz
 	runTasks(sum, numConsumers, numProducers, (BaseQueue*)&q);
 }
 
-void runAtomicQueue(uint64_t& sum, size_t numConsumers, size_t numProducers, size_t qsize) {
-	AtomicQueue q(qsize);
+void runAtomicQueue(uint64_t& sum, size_t numConsumers, size_t numProducers) {
+	AtomicQueue q;
+	printf("Tasks started.\n");
 	runTasks(sum, numConsumers, numProducers, (BaseQueue*)&q);
+	printf("Tasks finished.\n");
 }
-
-
-
-//class AtomicQueue : BaseQueue
-//{
-//private:
-//	struct Node
-//	{
-//		Node(uint8_t val) : _value(val), _next(nullptr)
-//		{
-//		}
-//		uint8_t _value;
-//		atomic<Node*> _next; // shared between all
-//		// each Node is padded to be on exactly ONE cache line
-//		char pad[CACHE_LINE_SIZE - sizeof(uint8_t) - sizeof(atomic<Node*>)];
-//	};
-//	char pad0[CACHE_LINE_SIZE];
-//
-//	Node* _head; // _head is not shared
-//	char pad1[CACHE_LINE_SIZE - sizeof(Node*)];
-//
-//	 mutex _consumerLock; // shared between consumers (one at a time)
-//	 char pad2[CACHE_LINE_SIZE - sizeof(mutex)];
-//	/*atomic<bool>  _consumerLock;
-//	char pad2[CACHE_LINE_SIZE - sizeof(atomic<bool>)];*/
-//
-//	Node* _tail; // _tail is not shared
-//	char pad3[CACHE_LINE_SIZE - sizeof(Node*)];
-//
-//	 mutex _producerLock; // shared between producers (one at a time)
-//	 char pad4[CACHE_LINE_SIZE - sizeof(mutex)];
-//	/*atomic<bool>  _producerLock;
-//	char pad4[CACHE_LINE_SIZE - sizeof(atomic<bool>)];*/
-//
-//	atomic<size_t> size; // shared between all
-//	char pad5[CACHE_LINE_SIZE - sizeof(atomic<size_t>)];
-//
-//	size_t max_size;
-//	char pad6[CACHE_LINE_SIZE - sizeof(size_t)];
-//
-//	condition_variable cond;
-//	char pad7[CACHE_LINE_SIZE - sizeof(condition_variable)];
-//
-//	bool empty() { return size == 0; }
-//	bool full() { return size == max_size; }
-//public:
-//	AtomicQueue(size_t qsize):
-//	size(0)
-//	{
-//		if (qsize)
-//			max_size = qsize;
-//		else
-//			max_size = 1;
-//		_head = _tail = new Node(0); // head points to pseudo-element before actual head
-//	}
-//	~AtomicQueue()
-//	{
-//		while (_head != nullptr)
-//		{
-//			Node* tmp = _head;
-//			_head = _head->_next;
-//			delete tmp;
-//		}
-//	}
-//
-//	// producers only use _tail pointer
-//	void push(const uint8_t val)
-//	{
-//		Node* tmp = new Node(val);
-//		//while (_producerLock.exchange(true)) ; // producer mutex lock
-//		unique_lock<mutex> prodLock(_producerLock);
-//		/*while (full()) { 
-//			printf("waiting in push... SIZE = %u\n", size.load());
-//			sleep_for(10ns);
-//		}*/
-//		cond.wait(prodLock, [&] { return !full(); });
-//		//printf("Pushing...\n");
-//		_tail->_next = tmp;
-//		_tail = tmp;
-//		cond.notify_all();
-//		prodLock.unlock();
-//		//_producerLock = false; // producer mutex unlock
-//		++size;
-//		//printf("SIZE after PUSH (non-critical region) = %u\n", size.load());
-//		//printf("Size = %u\n", size.load());
-//	}
-//	// consumers only use _head pointer
-//	bool pop(uint8_t& val)
-//	{
-//		Node* head_to_delete = _head;
-//		Node* actual_head = _head->_next;
-//		bool res;
-//		////while (_consumerLock.exchange(true)) ; // consumer mutex lock
-//		//if (res = cond.wait_for(consLock, 1ms, [&] { return !empty(); })) {
-//		//	head_to_delete = _head;
-//		//	actual_head = _head->_next;
-//		//	//printf("Popping...\n");
-//		//	val = actual_head->_value;
-//		//	actual_head->_value = 0;
-//		//	_head = actual_head;
-//		//	//_consumerLock = false; // consumer mutex unlock
-//		//	delete head_to_delete;
-//		//}
-//		//consLock.unlock();
-//		//if (res) {
-//		//	--size;
-//		//	//printf("Size = %u\n", size.load());
-//		//}
-//		//return res;
-//		//while (_consumerLock.exchange(true)); // consumer mutex lock
-//		
-//		unique_lock<mutex> consLock(_consumerLock);
-//		
-//		//if (this->empty()) {
-//		//	//printf("Wow, it's firstly empty in POP! SIZE = %u\n", size.load());
-//		//	sleep_for(5ms);
-//		//	head_to_delete = _head;
-//		//	actual_head = _head->_next;
-//		//}
-//
-//		if (res = cond.wait_for(consLock, 5ms, [&] { return !empty(); }))
-//		{
-//			head_to_delete = _head;
-//			actual_head = _head->_next;
-//			//printf("Now it's not empty in POP! SIZE = %u\n", size.load());
-//			val = actual_head->_value;
-//			actual_head->_value = 0;
-//			_head = actual_head;
-//			//_consumerLock = false; // consumer mutex unlock
-//			cond.notify_all();
-//			consLock.unlock(); 
-//			--size;
-//			//printf("SIZE after POP (non-critical region) = %u\n", size.load());
-//			//_consumerLock = false; // consumer mutex unlock
-//			delete head_to_delete;
-//			return true;
-//		}
-//		//_consumerLock = false; // consumer mutex unlock
-//		printf("OK NO ELEMENTS REMAINING\n");
-//		//sleep_for(3s);
-//		return false;
-//	}
-//};
