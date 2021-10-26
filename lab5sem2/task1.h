@@ -1,12 +1,15 @@
 #pragma once
+#include <iostream>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <vector>
 #include <chrono>
 
-extern long long NumTasks;
+extern size_t NumTasks1 = 1024 * 1024;
 
+using std::cout;
+using std::endl;
 using std::thread;
 using std::atomic;
 using std::mutex;
@@ -25,13 +28,13 @@ public:
 
 	size_t operator++(int) {
 		_m.lock();
-		int tmp = _counter++;
+		auto tmp = _counter++;
 		_m.unlock();
 		return tmp;
 	}
 	size_t operator++() {
 		_m.lock();
-		int tmp = ++_counter;
+		auto tmp = ++_counter;
 		_m.unlock();
 		return tmp;
 	}
@@ -64,7 +67,7 @@ public:
 
 
 void atomic_worker(AtomicCounter& c, vector<char>& v) {
-	for (size_t i = c++; i < NumTasks; i = c++) {
+	for (size_t i = c++; i < NumTasks1; i = c++) {
 		v[i] = v[i] + 1;
 		sleep_for(10ns);
 		//printf("\nThread ID: %u", std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -85,7 +88,7 @@ void runAtomicTasks(vector<char>& v, size_t NumThreads) {
 
 
 void mutex_worker(MutexCounter& c, vector<char>& v) {
-	for (size_t i = c++; i < NumTasks; i = c++) {
+	for (size_t i = c++; i < NumTasks1; i = c++) {
 		v[i] = v[i] + 1;
 		sleep_for(10ns);
 		//printf("\nThread ID: %u", std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -102,4 +105,24 @@ void runMutexTasks(vector<char>& v, size_t NumThreads) {
 	for (auto& t : threads) {
 		t.join();
 	}
+}
+
+void clear(vector<char>& v) {
+	for (auto& c : v)
+		c = 0;
+}
+
+
+void displayResult(const vector<char>& v) {
+	cout << "\nV: ";
+	for (auto& c : v)
+		cout << (int)c << ' ';
+	cout << endl;
+}
+
+bool is_all_ones(const vector<char>& v) {
+	for (auto& c : v)
+		if (c != 1)
+			return false;
+	return true;
 }
