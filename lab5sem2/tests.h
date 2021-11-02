@@ -15,13 +15,13 @@ using std::vector;
 using namespace std::chrono;
 
 extern size_t NumTasks1;
-extern uint64_t NumTasks2;
+extern size_t NumTasks2;
 
 const bool
-enableDynamicTest = false,
-enableStaticTest = false,
+enableDynamicTest = true,
+enableStaticTest = true,
 enableAtomicTest = true,
-enableCounterTests = false;
+enableCounterTests = true;
 
 void CounterTests() {
 	// TASK 1
@@ -106,13 +106,13 @@ void QueuesTests() {
 		cout << "-----------------ATOMIC QUEUE------------------" << endl;
 		for (size_t consumers : {1, 2, 4}) {
 			for (size_t producers : {1, 2, 4}) {
-					auto start = steady_clock().now();
-					runAtomicQueue(sum, consumers, producers); 
-					auto finish = steady_clock().now();
-					cout << "NumConsumers: " << consumers << endl;
-					cout << "NumProducers: " << producers << endl;
-					cout << "Resulting sum: " << sum << endl;
-					cout << "Time elapsed: " << duration_cast<milliseconds>(finish - start).count() << "ms" << endl << endl;
+				auto start = steady_clock().now();
+				runAtomicQueue(sum, consumers, producers);
+				auto finish = steady_clock().now();
+				cout << "NumConsumers: " << consumers << endl;
+				cout << "NumProducers: " << producers << endl;
+				cout << "Resulting sum: " << sum << endl;
+				cout << "Time elapsed: " << duration_cast<milliseconds>(finish - start).count() << "ms" << endl << endl;
 			}
 		}
 	}

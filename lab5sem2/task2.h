@@ -8,7 +8,7 @@
 #include <chrono>
 
 constexpr size_t CACHE_LINE_SIZE = 64; // typically
-extern uint64_t NumTasks2 = 4 * 1024 * 1024;
+extern size_t NumTasks2 = 4 * 1024 * 1024;
 
 using std::atomic;
 using std::condition_variable;
@@ -73,22 +73,14 @@ class StaticConditionQueue : BaseQueue  // works fine
 	condition_variable cond;
 	size_t max_size;
 	size_t size;
-	QElement* front, * back, * _tail;
+	vector<uint8_t> _buffer;
 
 	bool empty() { return !size; }
 	bool full() { return size == max_size; }
-
-	void fix_q()
-	{
-		// just rebind front element container to
-		// the tail of the whole queue
-		auto tmp = front;
-		front = front->next;
-		tmp->next = front;
-		_tail->next = tmp;
-		_tail = _tail->next;
+	void fix_q() {
+		for (size_t i = 1; i < size; ++i)
+			_buffer[i - 1] = _buffer[i];
 	}
-
 public:
 	StaticConditionQueue(mutex& mt, size_t max_size) : m(mt), size(0)
 	{
@@ -97,38 +89,16 @@ public:
 		else
 			this->max_size = 1;
 
-		front = new QElement{ back, 0 };
-		back = front;
-		back->next = front;
-		QElement* prev = front;
-		for (size_t i = 1; i < max_size; i++)
-		{
-			QElement* elem = new QElement{ nullptr, 0 };
-			prev->next = elem;
-			prev = prev->next;
-		}
-		_tail = prev;
-		_tail->next = front;
+		_buffer = vector<uint8_t>(max_size);
 	}
 	~StaticConditionQueue()
-	{
-		auto curr = front;
-		while (curr != _tail)
-		{
-			auto next = curr->next;
-			delete curr;
-			curr = next;
-		}
-		delete _tail;
-	}
+	{}
 
 	virtual void push(uint8_t val)
 	{
 		unique_lock<mutex> lock(m);
 		cond.wait(lock, [&] { return !full(); });
-		back->data = val;
-		back = back->next;
-		++size;
+		_buffer[size++] = val;
 		cond.notify_all();
 	}
 
@@ -138,12 +108,12 @@ public:
 		bool res;
 		if (res = cond.wait_for(lock, 1ms, [&] { return !empty(); }))
 		{
-			val = front->data;
+			val = _buffer[0];
 			fix_q();
 			--size;
 		}
 		cond.notify_all();
-		if (!res) printf("NO MORE DATA\n");
+		//if (!res) printf("NO MORE DATA\n");
 		return res;
 	}
 };
@@ -178,38 +148,32 @@ private:
 public:
 	AtomicQueue() {
 		_head = _tail = new Node(0); // head points to pseudo-element before actual head
-		// _producerLock = _consumerLock = false;
 	}
 	~AtomicQueue()
 	{
-		//printf("Destructor called.\n");
 		while (_head != nullptr)
 		{
 			Node* tmp = _head;
 			_head = _head->_next;
 			delete tmp;
 		}
-		//printf("Destructor finished.\n");
 	}
 
 	// producers only use _tail pointer
 	void push(const uint8_t val)
 	{
 		Node* tmp = new Node(val);
-		while (_producerLock.exchange(true)) ; // producer mutex lock
-		//printf("PUSH L. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+		while (_producerLock.exchange(true)); // producer mutex lock
 		_tail->_next = tmp;
 		_tail = tmp;
 		_producerLock = false; // producer mutex unlock
-		//printf("PUSH U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 	}
 	// consumers only use _head pointer
 	bool pop(uint8_t& val)
 	{
-		while (_consumerLock.exchange(true)) ; // consumer mutex lock
+		while (_consumerLock.exchange(true)); // consumer mutex lock
 		Node* head_to_delete = _head;
 		Node* actual_head = _head->_next;
-		//printf("POP  L. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 		if (!actual_head) {
 			sleep_for(1ms);
 			head_to_delete = _head;
@@ -220,14 +184,10 @@ public:
 			actual_head->_value = 0;
 			_head = actual_head;
 			_consumerLock = false; // consumer lock unlock
-			//printf("\nBefore delete...  Thread id: %u\nAddress: %p\n", std::hash<std::thread::id>{}(std::this_thread::get_id()), head_to_delete);
 			delete head_to_delete;
-			//printf("After delete...   Thread id: %u\n\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
-			//printf("POP  U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 			return true;
 		}
 		_consumerLock = false;
-		//printf("POP  U. Thread id:   %u\n", std::hash<std::thread::id>{}(std::this_thread::get_id()));
 		return false;
 	}
 };
@@ -257,7 +217,7 @@ public:
 
 class Consumer
 {
-	uint64_t localSum = 0;
+	size_t localSum = 0;
 	BaseQueue* _queue;
 
 public:
@@ -275,7 +235,7 @@ public:
 		}
 	}
 
-	uint64_t get_local_sum() const { return localSum; }
+	size_t get_local_sum() const { return localSum; }
 };
 
 
@@ -302,7 +262,7 @@ void runTasks(uint64_t& sum, size_t numConsumers, size_t numProducers, BaseQueue
 	for (int i = 0; i < numConsumers; i++)
 	{
 		sum += consumers[i].get_local_sum();
-		printf("Consumer %u localSum=%u\n", i, consumers[i].get_local_sum());
+		printf("Consumer %d localSum=%u\n", i, consumers[i].get_local_sum());
 	}
 }
 
