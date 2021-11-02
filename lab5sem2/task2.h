@@ -70,13 +70,11 @@ class StaticConditionQueue : BaseQueue  // works fine
 		uint8_t data;
 	};
 	mutex& m;
-	condition_variable cond;
+	condition_variable cond_Nempty, cond_Nfull;
 	size_t max_size;
 	size_t size;
 	vector<uint8_t> _buffer;
 
-	bool empty() { return !size; }
-	bool full() { return size == max_size; }
 	void fix_q() {
 		for (size_t i = 1; i < size; ++i)
 			_buffer[i - 1] = _buffer[i];
@@ -97,23 +95,34 @@ public:
 	virtual void push(uint8_t val)
 	{
 		unique_lock<mutex> lock(m);
-		cond.wait(lock, [&] { return !full(); });
+		if (size == max_size) {
+			cond_Nfull.wait(lock, [&] { return size < max_size; });
+		}
 		_buffer[size++] = val;
-		cond.notify_all();
+		cond_Nempty.notify_all();
 	}
 
 	virtual bool pop(uint8_t& val)
 	{
 		unique_lock<mutex> lock(m);
 		bool res;
-		if (res = cond.wait_for(lock, 1ms, [&] { return !empty(); }))
+		if (size != 0)
+		{
+			val = _buffer[0];
+			fix_q();
+			--size;
+			cond_Nfull.notify_all();
+			return true;
+		}
+		// so for now it IS empty and there's a need to wait for notification
+		// about addition from another thread
+		if (res = cond_Nempty.wait_for(lock, 1ms, [&] { return size != 0; }))
 		{
 			val = _buffer[0];
 			fix_q();
 			--size;
 		}
-		cond.notify_all();
-		//if (!res) printf("NO MORE DATA\n");
+		cond_Nfull.notify_all();
 		return res;
 	}
 };
@@ -198,46 +207,55 @@ class Producer
 {
 	uint64_t numTasks;
 	BaseQueue* _queue;
+	static bool ready;
 
 public:
 	Producer(BaseQueue* q, uint64_t nt) : numTasks(nt), _queue(q)
 	{
 	}
+	static void toggle_run() {
+		ready = !ready;
+	}
 
 	void operator()()
 	{
 		int nt = numTasks;
+		while (!ready) ;
 		while (numTasks--)
 		{
 			_queue->push(1);
-			//printf("TASKS REMAIN = %u   PRODUCER NUM TASKS = %u\n", (int)numTasks, nt - (int)numTasks);
 		}
 	}
 };
+bool Producer::ready = false;
 
 class Consumer
 {
 	size_t localSum = 0;
 	BaseQueue* _queue;
+	static bool ready;
 
 public:
 	Consumer(BaseQueue* q) : _queue(q)
 	{
 	}
+	static void toggle_run() {
+		ready = !ready;
+	}
 
 	void operator()()
 	{
 		uint8_t val;
+		while (!ready) ;
 		while (_queue->pop(val))
 		{
 			localSum = localSum + val;
-			//printf("VAL = %u CONSUMED\n", val);
 		}
 	}
 
 	size_t get_local_sum() const { return localSum; }
 };
-
+bool Consumer::ready = false;
 
 
 void runTasks(uint64_t& sum, size_t numConsumers, size_t numProducers, BaseQueue* q) {
@@ -255,6 +273,9 @@ void runTasks(uint64_t& sum, size_t numConsumers, size_t numProducers, BaseQueue
 	{
 		consumerThreads[i] = thread(std::ref(consumers[i]));
 	}
+	
+	producers[0].toggle_run();
+	consumers[0].toggle_run();
 	for (auto& t : producerThreads) t.join();
 	for (auto& t : consumerThreads) t.join();
 
@@ -264,6 +285,8 @@ void runTasks(uint64_t& sum, size_t numConsumers, size_t numProducers, BaseQueue
 		sum += consumers[i].get_local_sum();
 		printf("Consumer %d localSum=%u\n", i, consumers[i].get_local_sum());
 	}
+	producers[0].toggle_run();
+	consumers[0].toggle_run();
 }
 
 void runDynamicQueue(uint64_t& sum, size_t numConsumers, size_t numProducers)
@@ -281,7 +304,5 @@ void runStaticQueue(uint64_t& sum, size_t numConsumers, size_t numProducers, siz
 
 void runAtomicQueue(uint64_t& sum, size_t numConsumers, size_t numProducers) {
 	AtomicQueue q;
-	printf("Tasks started.\n");
 	runTasks(sum, numConsumers, numProducers, (BaseQueue*)&q);
-	printf("Tasks finished.\n");
 }
